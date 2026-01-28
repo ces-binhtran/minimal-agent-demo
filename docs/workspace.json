@@ -1,0 +1,1034 @@
+{
+  "configuration" : {
+    "scope" : "SoftwareSystem"
+  },
+  "description" : "C4 Model for an AI-powered codebase ownership analysis agent",
+  "documentation" : {
+    "decisions" : [ {
+      "content" : "# 1. Use LangGraph for Agent Orchestration\n\nDate: 2026-01-28\n\n## Status\n\nAccepted\n\n## Context\n\nWe needed a framework for building a stateful AI agent that could:\n- Maintain conversation context across multiple turns\n- Execute complex multi-step workflows (plan → execute → reflect)\n- Provide visibility into agent decision-making\n- Avoid infinite loops and uncontrolled behavior\n\nOptions considered:\n1. **Raw LangChain chains** - Simple but limited for multi-step agentic workflows\n2. **LangGraph** - Explicit graph-based orchestration\n3. **Google ADK** - Managed service with event-driven runtime\n4. **Custom loop implementation** - Full control but hard to debug\n\n## Decision\n\nWe chose **LangGraph** for our agent implementation.\n\n## Rationale\n\n### Pros\n- **Explicit Control Flow**: Every node and edge is visible, making debugging easier\n- **State Management**: Custom reducers give fine-grained control over state merging\n- **No Vendor Lock-in**: Can run anywhere (not tied to Google Cloud)\n- **Model Flexibility**: Works with any LLM (OpenAI, Anthropic, local models)\n- **Production-Ready**: Used by companies like Uber and LinkedIn\n\n### Cons\n- **Learning Curve**: Steeper than simple chains, need to understand graph concepts\n- **DIY Production Tooling**: Have to integrate monitoring (LangSmith), evals, etc. ourselves\n- **More Code**: Requires explicit node and edge definitions\n\n## Consequences\n\n### Positive\n- We can **see exactly** what the agent is doing at each step (thought process UI)\n- **Preventing infinite loops** is straightforward with max iterations on reflector node\n- **State persistence** with MySQL checkpointer works reliably\n- **Testing** is easier - each node can be unit tested independently\n\n### Negative\n- Had to spend time learning LangGraph concepts (graphs, reducers, checkpoints)\n- Need to manually set up monitoring and observability (not built-in like Google ADK)\n- More upfront code compared to simple LangChain chains\n\n### Trade-offs Accepted\n- We accept the DIY overhead for production tooling in exchange for **full control and transparency**\n- We accept the steeper learning curve because it forces us to understand agent fundamentals\n- We accept more code because it makes the agent behavior **explicit and debuggable**\n\n## Comparison with Google ADK\n\n| Aspect | LangGraph (Our Choice) | Google ADK |\n|--------|------------------------|------------|\n| Control Flow | Explicit graphs | Event-driven (abstracted) |\n| Learning Curve | Steep | Moderate |\n| Vendor Lock-in | None | Google Cloud |\n| Production Tools | DIY | Built-in |\n| Transparency | Full visibility | More magical |\n\nFor our use case (learning and transparency), LangGraph was the better fit.\n\n## References\n\n- [LangGraph Documentation](https://langchain-ai.github.io/langgraph/)\n- [Framework Comparison](../langgraph-vs-google-adk.md)\n- [Implementation](../../src/agent/graph.ts)\n",
+      "date" : "2026-01-28T00:00:00Z",
+      "format" : "Markdown",
+      "id" : "1",
+      "status" : "Accepted",
+      "title" : "Use LangGraph for Agent Orchestration"
+    }, {
+      "content" : "# 2. Store Prompts as YAML Files\n\nDate: 2026-01-28\n\n## Status\n\nAccepted\n\n## Context\n\nLLM prompts are critical to agent behavior. We needed a way to:\n- Version control prompt changes\n- Allow non-engineers to edit prompts\n- A/B test different prompt variations\n- Keep prompts separate from code logic\n\nOptions considered:\n1. **Hardcode in TypeScript** - Simple but hard to iterate\n2. **JSON files** - Better but less readable\n3. **YAML files** - Human-readable, easy to edit\n4. **Database** - Over-engineered for our use case\n\n## Decision\n\nWe store all prompts as **YAML files** using the **COSTAR framework**.\n\n## Rationale\n\n### YAML Format\n- **Human-readable**: Plain text, easy to review in Git diffs\n- **Version controlled**: Every prompt change tracked in Git history\n- **Non-engineer friendly**: Product managers can propose prompt changes via PRs\n\n### COSTAR Framework\nEach prompt file follows this structure:\n```yaml\ntemplate: |\n  # CONTEXT\n  You are a STRICT Guardrail for a Knowledge Ownership Agent.\n  \n  # OBJECTIVE\n  Block any query outside software engineering topics.\n  \n  # STYLE\n  Strict, binary decision-making.\n  \n  # TONE\n  Authoritative but invisible.\n  \n  # AUDIENCE\n  Internal system router.\n  \n  # RESPONSE FORMAT\n  JSON: {\"allowed\": boolean, \"reason\": string}\n```\n\nThis ensures prompts are **consistent and structured**.\n\n## Consequences\n\n### Positive\n- ✅ **Easy iteration**: Change prompts without touching code\n- ✅ **Git history**: See how prompts evolved (`git log prompts/guardrail.yaml`)\n- ✅ **A/B testing**: Swap YAML files to test variations\n- ✅ **Collaboration**: Non-engineers can contribute prompt improvements\n\n### Negative\n- ❌ **File I/O overhead**: Loading YAML files on every node execution\n- ❌ **Runtime errors**: Typos in YAML only caught at runtime (not compile-time)\n\n### Mitigations\n- Cache loaded prompts in memory (future optimization)\n- Add YAML schema validation on startup\n- Use TypeScript types for prompt variables\n\n## Example\n\n**File**: `src/agent/prompts/guardrail.yaml`\n\n```yaml\ntemplate: |\n  # CONTEXT\n  You are a STRICT Guardrail...\n  \n  # INPUT\n  Query: \"${userQuery}\"\n  Conversation History: ${conversationHistory}\n```\n\n**Usage**: `src/agent/nodes/guardrail.ts`\n\n```typescript\nconst prompt = await loadPrompt(\"guardrail.yaml\", {\n  userQuery: state.messages[state.messages.length - 1].content,\n  conversationHistory: formatHistory(state.messages)\n});\n```\n\n## References\n\n- [Prompt Files](../../src/agent/prompts/)\n- [COSTAR Framework](https://medium.com/@pankaj_pandey/costar-framework-for-llm-prompts-a-proven-recipe-for-better-results-38bb470d45e1)\n",
+      "date" : "2026-01-28T00:00:00Z",
+      "format" : "Markdown",
+      "id" : "2",
+      "status" : "Accepted",
+      "title" : "Store Prompts as YAML Files"
+    }, {
+      "content" : "# 3. 7-Node Agent Architecture\n\nDate: 2026-01-28\n\n## Status\n\nAccepted\n\n## Context\n\nWe needed to design an agent workflow that could:\n- Handle multi-step reasoning (plan → execute → reflect)\n- Maintain conversation context\n- Prevent infinite loops\n- Be debuggable and transparent\n\nWe had to decide how many nodes and what each should do.\n\n## Decision\n\nWe chose a **7-node architecture**:\n1. Orchestrator - Initialize context\n2. Guardrail - Block off-topic queries\n3. Intent Parser - Classify user intent\n4. Query Planner - Plan tool execution\n5. Tool Executor - Execute tools\n6. Reflector - Validate completeness\n7. Response Generator - Create final answer\n\n## Rationale\n\n### Why 7 Nodes? (Not More, Not Less)\n\n**Too Few Nodes (3-4)**:\n- ❌ Combined nodes = mixed responsibilities (hard to test)\n- ❌ Less visibility into agent reasoning\n- Example: Combining Intent Parser + Query Planner would make debugging harder\n\n**Too Many Nodes (10+)**:\n- ❌ Over-complicated for our use case\n- ❌ More LLM calls = higher latency & cost\n- ❌ Harder to understand the flow\n\n**7 Nodes = Sweet Spot**:\n- ✅ Each node has **one clear responsibility** (Single Responsibility Principle)\n- ✅ Enough granularity for debugging\n- ✅ Not over-complicated\n\n### Why These Specific Nodes?\n\n#### 1. Orchestrator (Why Needed?)\n**Problem**: First LLM call needs system context (\"You are an agent...\")  \n**Edge Case**: Without it, agent doesn't know its role  \n**Alternative Considered**: Add context in API layer → Rejected (mixing concerns)\n\n#### 2. Guardrail (Why First?)\n**Problem**: Users might ask off-topic queries (weather, jokes)  \n**Edge Case**: Without it, agent wastes $ on irrelevant processing  \n**Why Before Intent Parser**: Block early to save LLM costs  \n**Alternative Considered**: Guardrail after Intent → Rejected (already spent tokens parsing intent)\n\n#### 3. Intent Parser (Why Separate from Planner?)\n**Problem**: Need to classify intent BEFORE planning tools  \n**Edge Case**: Ambiguous queries (\"payment\") need clarification  \n**If Combined with Planner**: Can't ask clarifying questions before tool selection  \n\n#### 4. Query Planner (Why Not Just Execute All Tools?)\n**Problem**: Don't always need all 5 tools (wastes time/money)  \n**Edge Case**: \"Who owns payment?\" only needs 1 tool, not all 5  \n**Alternative Considered**: Execute all tools → Rejected (slow, expensive)\n\n#### 5. Tool Executor (Why Separate from Planner?)\n**Problem**: Planning logic ≠ execution logic  \n**Edge Case**: Tool failures need error handling (retry, fallback)  \n**Testability**: Can mock tools in tests without mocking planner\n\n#### 6. Reflector (Why Needed?)\n**Problem**: Sometimes 1 tool isn't enough (need iterative data gathering)  \n**Edge Case**: User asks \"Who owns payment AND auth?\" → need 2 tool calls  \n**Without Reflector**: Agent stops after first tool (incomplete answer)  \n**Critical**: Prevents infinite loops with max_iterations=5\n\n#### 7. Response Generator (Why Last?)\n**Problem**: Tool results are raw data, not user-friendly  \n**Edge Case**: \"busFactor: 2\" needs context (\"Your bus factor is 2, which means...\")  \n**Alternative Considered**: Return raw tool results → Rejected (terrible UX)\n\n---\n\n## Edge Cases & How We Handle Them\n\n### 1. Infinite Loops\n**Scenario**: Reflector keeps saying \"need more data\"  \n**Solution**: Hard limit `if (iterations >= 5) → force exit`  \n**Code**: `reflector.ts` line 23\n\n### 2. Off-Topic Queries\n**Scenario**: \"What's the weather in Tokyo?\"  \n**Solution**: Guardrail blocks → immediate END (no tool execution)  \n**Cost Saved**: ~$0.04 per blocked query\n\n### 3. Ambiguous Queries\n**Scenario**: User says just \"payment\"  \n**Solution**: Intent Parser classifies as `ambiguous` → Response Generator asks for clarification  \n**No Tools Executed**: Query Planner skipped\n\n### 4. Tool Failures\n**Scenario**: Database connection fails  \n**Solution**: Tool Executor catches errors → returns `{ status: 'error', message: '...' }`  \n**Reflector**: Sees error → routes to Response Generator with apology\n\n### 5. Multiple Entities\n**Scenario**: \"Who owns payment AND auth?\"  \n**Solution**: Query Planner creates 2 tool calls → Tool Executor runs both → Reflector validates both complete  \n**Iterations**: Usually 1, max observed = 2\n\n### 6. Long Conversations\n**Scenario**: 50+ messages in history  \n**Solution**: Summarize old messages (keep last 5 turns)  \n**Status**: Not yet implemented (TODO)\n\n---\n\n## Consequences\n\n### Positive\n- ✅ **Debuggable**: Can see exactly which node failed\n- ✅ **Testable**: Each node independently unit-testable\n- ✅ **Maintainable**: Change one node without affecting others\n- ✅ **Transparent**: UI shows thought process (all 7 steps)\n\n### Negative\n- ❌ **Latency**: 5-6 LLM calls per query (~8-12 seconds total)\n- ❌ **Cost**: $0.02-0.05 per query (GPT-4 for 4 nodes)\n- ❌ **Complexity**: New developers need to understand 7 nodes\n\n### Trade-offs Accepted\n- **We accept higher latency** in exchange for transparency and debuggability\n- **We accept more code** to maintain single responsibility per node\n- **We accept 6 LLM calls** because each serves a clear purpose\n\n---\n\n## Alternatives Considered\n\n### Alternative 1: Simple Chain (3 nodes)\n```\nGuardrail → Worker (does everything) → Response\n```\n**Rejected Because**: Black box, hard to debug\n\n### Alternative 2: ReAct Pattern (5 nodes)\n```\nThought → Action → Observation → Thought → Response\n```\n**Rejected Because**: Too generic, doesn't fit our use case well\n\n### Alternative 3: Google ADK Multi-Agent\n```\nOrchestrator Agent → [Guardrail Agent, Analysis Agent, Response Agent]\n```\n**Rejected Because**: Over-engineered, we don't need hierarchical agents yet\n\n---\n\n## Metrics (12 Test Queries)\n\n| Metric | Value |\n|--------|-------|\n| Avg Latency | 9.2 seconds |\n| Avg Cost | $0.032/query |\n| Avg LLM Calls | 5.8 calls |\n| Guardrail Blocks | 2/12 queries (16.7%) |\n| Iterations > 1 | 0/12 (single-pass sufficient) |\n| Failures | 0/12 |\n\n**Conclusion**: 7 nodes is the right balance for our use case.\n\n---\n\n## Future Optimization Ideas\n\nIf latency becomes a problem:\n1. **Parallelize**: Run Guardrail + Intent Parser in parallel (save ~2s)\n2. **Cache**: Store common query responses in Redis\n3. **Cheaper Models**: Use GPT-3.5 for Reflector (simple yes/no decision)\n4. **Streaming**: Stream responses as nodes complete\n\n**When to Reconsider 7 Nodes**:\n- If we add 5+ more tools → consider Tool Router node\n- If queries become conversational → consider Dialogue Manager node\n- If we need multi-agent coordination → reconsider architecture entirely\n\n---\n\n## References\n\n- [7-Node Implementation](../../src/agent/graph.ts)\n- [Node Definitions](../../src/agent/nodes/)\n- [LangGraph Documentation](https://langchain-ai.github.io/langgraph/)\n",
+      "date" : "2026-01-28T00:00:00Z",
+      "format" : "Markdown",
+      "id" : "3",
+      "status" : "Accepted",
+      "title" : "7-Node Agent Architecture"
+    } ],
+    "sections" : [ {
+      "content" : "# Architecture Design Decisions\n\nThis document explains the **WHY** behind the architecture shown in the C4 diagrams.\n\n## Overview\n\n**What**: Our agent has a 7-node graph architecture  \n**Why**: Each node has one responsibility, making it debuggable and testable  \n**Trade-offs**: Higher latency (6 LLM calls) but full transparency\n\n---\n\n## Design Principles\n\n### 1. Single Responsibility Per Node\n\n**Principle**: Each node does ONE thing well.\n\n**Example**:\n- ❌ Bad: \"Worker Node\" that parses intent + plans tools + executes tools\n- ✅ Good: Separate nodes for Intent Parser, Query Planner, Tool Executor\n\n**Why**: Easier to debug, test, and modify independently.\n\n---\n\n### 2. Fail Fast, Fail Clear\n\n**Principle**: Block bad inputs early, provide clear errors.\n\n**Example**:\n- Guardrail is **Node 2** (not Node 5) → blocks off-topic queries immediately\n- Saves 4 LLM calls + tool execution on invalid queries\n\n**Edge Case Handled**: User asks \"What's the weather?\" → Blocked at Guardrail, costs $0.001 instead of $0.04\n\n---\n\n### 3. Explicit > Implicit\n\n**Principle**: Make control flow visible (graphs > loops).\n\n**Example**:\n```typescript\n// ❌ Implicit: Hidden in while loop\nwhile (!done) {\n  result = await agent.run();\n  done = result.isComplete; // Who knows when this is true?\n}\n\n// ✅ Explicit: Graph shows routing\nreflectorNode → routes to:\n  - query_planner (if need more data)\n  - response_generator (if complete)\n```\n\n**Why**: Team can visualize flow, UI can show thought process.\n\n---\n\n## Key Decisions Explained\n\n### Why Separate Planner and Executor?\n\n**Scenario**: User asks \"Who owns payment module?\"\n\n**Option 1: Combined Node**\n```typescript\nasync function planAndExecute(state) {\n  const tools = selectTools(state.intent); // Planning\n  const results = await executeTools(tools); // Execution\n  return { results };\n}\n```\n**Problems**:\n- Hard to test planning logic independent of execution\n- Can't retry failed tools without re-planning\n- Mixed concerns\n\n**Option 2: Separate Nodes** ✅\n```typescript\nasync function queryPlannerNode(state) { /* Just planning */ }\nasync function toolExecutorNode(state) { /* Just execution */ }\n```\n**Benefits**:\n- Test planner with mocked tools\n- Retry failed tools without re-planning\n- Clear separation of concerns\n\n---\n\n### Why Reflector Node?\n\n**Problem**: Sometimes need multiple tool calls.\n\n**Example Query**: \"Who owns payment AND auth?\"\n\n**Without Reflector**:\n```\nIntent Parser → Query Planner → Tool Executor → Response Generator\n                   ↓\n              Calls get_ownership(\"payment\") only\n              ↓\n           Misses \"auth\" module\n```\n\n**With Reflector**:\n```\nTool Executor → Reflector: \"Do we have ownership for both modules?\"\n                   ↓\n              Reflector: \"No, missing auth\"\n                   ↓\n              Routes back to Query Planner\n                   ↓\n              Planner: get_ownership(\"auth\")\n                   ↓\n              Tool Executor → Reflector: \"Now complete!\" → Response Generator\n```\n\n**Edge Case Handled**: Multi-entity queries need 2+ iterations\n\n---\n\n## Edge Cases & Solutions\n\n### 1. User Sends Empty Message\n\n**What Happens**:\n- Orchestrator → Guardrail → classifies as `ambiguous`\n- Guardrail allows (not off-topic)\n- Intent Parser → `greeting_or_help`\n- Query Planner → **no tools needed**\n- Routes directly to Response Generator\n- Response: \"Hi! How can I help?\"\n\n**LLM Calls**: 3 (Guardrail, Intent, Response)\n\n---\n\n### 2. Database Connection Fails\n\n**What Happens**:\n- Tool Executor tries to call `get_module_ownership`\n- MySQL connection timeout\n- Catch error → return `{ status: 'error', message: '...' }`\n- Reflector sees error status → routes to Response Generator\n- Response: \"I encountered a database issue. Please try again.\"\n\n**User Experience**: Graceful error message, not a crash\n\n---\n\n### 3. Infinite Loop Prevention\n\n**Scenario**: Reflector keeps saying \"need more data\"\n\n**Solution**:\n```typescript\nfunction reflectorNode(state) {\n  if (state.iterations >= 5) {\n    // Force exit after 5 iterations\n    return \"response_generator\";\n  }\n  // ... normal logic\n}\n```\n\n**Real Test**: Never seen >1 iteration in 12 test queries\n\n---\n\n## Metrics That Influenced Design\n\n| Decision | Metric | Value | Impact |\n|----------|--------|-------|--------|\n| Guardrail first | Blocked queries | 16.7% (2/12) | Saved $0.08 |\n| Separate Planner/Executor | Failed tools | 0/12 | Easy retry if needed |\n| 7 nodes (not 3) | Debugging time | ~5 min/bug | Can pinpoint node |\n| Max iterations = 5 | Infinite loops | 0/12 | Zero runaway costs |\n\n---\n\n## What We'd Change (Lessons Learned)\n\n### 1. Add Streaming Earlier\n\n**Current**: Wait for all 7 nodes → 9s latency  \n**Better**: Stream after each node  \n**Why Not**: Complexity (will add in v2)\n\n### 2. Parallelize Guardrail + Intent\n\n**Current**: Sequential (Guardrail → Intent)  \n**Optimization**: Run both in parallel, gate at Query Planner  \n**Savings**: ~2 seconds  \n**Why Not Yet**: LangGraph parallel edges = more complex state management\n\n### 3. Cache Common Queries\n\n**Current**: Every \"What's the bus factor?\" → 6 LLM calls  \n**Better**: Redis cache for repeated queries  \n**Savings**: 68% cost reduction on repeated queries  \n**Status**: TODO\n\n---\n\n## Comparison with Alternatives\n\n### Our 7-Node Architecture\n\n**Pros**:\n- Explicit, visible, debuggable\n- Each node independently testable\n- Can optimize individual nodes (cheaper LLMs for simple tasks)\n\n**Cons**:\n- 5-6 LLM calls per query (latency + cost)\n- More code to maintain\n\n### Alternative: Simple 3-Node Chain\n\n**Pros**:\n- Less code, faster (3 LLM calls)\n\n**Cons**:\n- Black box behavior\n- Hard to debug failures\n- Can't optimize individual steps\n\n### Alternative: Google ADK Multi-Agent\n\n**Pros**:\n- Built-in optimizations (streaming, parallel)\n\n**Cons**:\n- Less explicit (more \"magic\")\n- Vendor lock-in\n- Harder to understand for learning\n\n**Our Choice**: 7 nodes = right trade-off for **transparency during learning**.\n\n---\n\n## References\n\nSee C4 diagrams at http://localhost:8080 for visual representation.\n\n- [ADR-003: 7-Node Architecture](../adrs/0003-seven-node-architecture.md)\n- [Component Diagram](../c4-component.md)\n- [Implementation](../../src/agent/graph.ts)\n",
+      "filename" : "architecture-rationale.md",
+      "format" : "Markdown",
+      "order" : 1,
+      "title" : ""
+    }, {
+      "content" : "# Agent Capability Assessment: Agentic Properties Analysis\n\n## Executive Summary\n\nThis document evaluates the Knowledge Ownership Agent against established criteria for agentic AI systems. The assessment identifies current capabilities, gaps, and a development roadmap for enhanced autonomy.\n\n**Current Classification**: Reactive Assistant with Basic Planning (Agentic Score: 36%)\n\n**Recommendation**: Implement Phases 1-2 (Memory & Real Environment) for production viability within 8 weeks.\n\n---\n\n## 1. Agentic Properties Framework\n\n### 1.1 Definition of Agency in AI Systems\n\nAccording to contemporary AI research literature, agentic systems exhibit seven core properties that distinguish them from reactive or rule-based systems.\n\n### 1.2 Assessment Criteria\n\n| Property | Definition | Evaluation Method |\n|----------|------------|-------------------|\n| **Autonomy** | Independent decision-making without continuous human intervention | Decision point analysis, prompt dependency evaluation |\n| **Goal-Directedness** | Sustained pursuit of objectives across multiple interactions | Multi-turn task completion tracking |\n| **Perception** | Environmental awareness and context interpretation | State observation mechanisms, context window analysis |\n| **Action** | Capability to modify environment or produce externally-visible effects | Tool execution examination, output impact assessment |\n| **Reasoning** | Strategic planning and adaptive problem-solving | Planning node evaluation, iteration analysis |\n| **Learning** | Performance improvement through experience | Error rate comparison, strategy optimization measurement |\n| **Proactiveness** | Self-initiated actions without external prompting | Background task examination, autonomous trigger assessment |\n\n---\n\n## 2. Current System Assessment\n\n### 2.1 Present Capabilities\n\n#### 2.1.1 Planning (Score: 7/10)\n**Evidence**: Query Planner node demonstrates tool selection based on classified user intent.\n\n**Mechanism**:\n```typescript\n// Planning logic in query-planner.ts\nasync function queryPlannerNode(state: AgentState) {\n  const intent = state.intent;\n  const toolCalls = selectToolsForIntent(intent); // LLM-driven selection\n  return { queryPlan: { toolCalls } };\n}\n```\n\n**Limitations**:\n- Single-step planning (no hierarchical decomposition)\n- Reactive only (plan-on-demand, not predictive)\n- Fixed planning strategy (no meta-planning)\n\n#### 2.1.2 Iterative Execution (Score: 6/10)\n**Evidence**: Reflector node enables multi-iteration data gathering via conditional routing.\n\n**Flow**:\n```\nTool Executor → Reflector → [Need more data?]\n                              ├─ Yes → Query Planner (iterate)\n                              └─ No → Response Generator (complete)\n```\n\n**Observed Behavior** (12 test queries):\n- 0/12 queries required >1 iteration\n- Hard limit: 5 iterations maximum\n- No learned iteration strategies\n\n**Limitations**:\n- Iteration depth artificially constrained\n- No memory of successful iteration patterns\n- Cannot handle tasks requiring >5 cycles\n\n#### 2.1.3 Self-Reflection (Score: 5/10)\n**Evidence**: Reflector node validates data completeness before response generation.\n\n**Validation Logic**:\n```typescript\n// Simplified from reflector.ts\nif (state.iterations >= 5) return \"response_generator\"; // Force exit\nif (hasEnoughData(state.toolResults)) return \"response_generator\";\nreturn \"query_planner\"; // Continue gathering\n```\n\n**Limitations**:\n- Shallow reflection (binary sufficient/insufficient)\n- No quality assessment of gathered data\n- No strategy critique or optimization\n\n#### 2.1.4 Context Awareness (Score: 7/10)\n**Evidence**: MySQL-persisted conversation state enables multi-turn context maintenance.\n\n**Implementation**:\n- Checkpoint saved after each node execution\n- Full message history preserved within thread\n- Thread-based session management\n\n**Limitations**:\n- Context limited to single thread (no cross-session memory)\n- No automatic summarization (unbounded growth risk)\n- Thread ID required for resumption (manual state management)\n\n---\n\n### 2.2 Missing Capabilities\n\n#### 2.2.1 Long-Term Memory (Score: 0/10)\n**Gap**: No episodic or semantic memory across sessions.\n\n**Impact**: System cannot leverage past interactions to improve future responses.\n\n**Example Failure**:\n```\nSession 1, Thread A:\nQuery: \"Who owns the payment module?\"\nResponse: \"Alice owns 85% of payment module\"\n\nSession 2, Thread B (same user, different thread):\nQuery: \"What does Alice own?\"\nResponse: \"No context available for 'Alice'\"\n```\n\n**Required**: Cross-session memory store with relevance-based retrieval.\n\n#### 2.2.2 Learning from Errors (Score: 0/10)\n**Gap**: No error logging, pattern detection, or strategy adaptation.\n\n**Impact**: Identical mistakes repeated indefinitely.\n\n**Example Failure**:\n```\nQuery: \"Who owns authentification?\" [typo]\nIteration 1: Tool fails (module not found)\n             Agent repeats same query to same tool\n\nIteration 2: Tool fails again (module not found)\n             Agent repeats same query to same tool\n\nIteration 3-5: Identical failures\n```\n\n**Required**: Error log with pattern detection and alternative strategy selection.\n\n#### 2.2.3 Task Decomposition (Score: 0/10)\n**Gap**: No multi-step goal planning or sub-task tracking.\n\n**Impact**: Cannot handle complex, multi-turn objectives.\n\n**Example Failure**:\n```\nQuery: \"Create a comprehensive ownership report for all modules, including bus factor analysis, risk assessment, and recommendations\"\n\nCurrent Behavior: Classifies as \"ambiguous\" intent, requests clarification\n\nRequired Behavior: Decompose into:\n  1. Get all modules\n  2. For each module: get ownership\n  3. Calculate bus factor\n  4. Identify risk modules\n  5. Generate recommendations\n  6. Compile report\n```\n\n**Required**: Goal decomposition node with progress tracking across turns.\n\n#### 2.2.4 Real Environment Interaction (Score: 1/10)\n**Gap**: All tools return mock/randomized data.\n\n**Impact**: System provides non-actionable insights.\n\n**Current Implementation**:\n```typescript\n// Mock tool in module-ownership.ts\nasync execute(params: { moduleName: string }) {\n  const randomOwner = [\"Alice\", \"Bob\", \"Charlie\"][Math.floor(Math.random() * 3)];\n  return { owner: randomOwner, percentage: 70 + Math.random() * 30 };\n}\n```\n\n**Required**: Real Git repository analysis via `git blame`, `git log`, contributor statistics.\n\n#### 2.2.5 Proactive Behavior (Score: 0/10)\n**Gap**: Purely reactive to user queries; no autonomous monitoring or alerting.\n\n**Impact**: Cannot identify emerging risks without explicit query.\n\n**Required Behavior** (not present):\n```typescript\n// Hypothetical proactive monitor\nasync function backgroundMonitor() {\n  const busFactor = await calculateBusFactor();\n  if (busFactor < 2) {\n    await sendAlert(\"Critical: Bus factor below threshold\");\n  }\n}\n\n// Schedule: Every 24 hours\ncron.schedule(\"0 0 * * *\", backgroundMonitor);\n```\n\n**Required**: Background jobs, threshold monitoring, autonomous alerting.\n\n#### 2.2.6 Self-Improvement (Score: 0/10)\n**Gap**: No prompt optimization, strategy tuning, or meta-learning.\n\n**Impact**: Performance static over time despite usage data.\n\n**Required Mechanism** (not present):\n```typescript\n// Hypothetical A/B testing\nconst promptVariants = {\n  v1: \"guardrail.yaml\",\n  v2: \"guardrail-strict.yaml\"\n};\n\n// After 100 queries\nif (v2.accuracy > v1.accuracy + 0.05) {\n  deployPrompt(\"guardrail-strict.yaml\");\n}\n```\n\n**Required**: Prompt versioning, outcome tracking, automated deployment of superior variants.\n\n---\n\n## 3. Quantitative Assessment\n\n### 3.1 Agentic Property Matrix\n\n| Property | Weight | Score (0-10) | Weighted Score |\n|----------|--------|--------------|----------------|\n| Autonomy | 15% | 5 | 0.75 |\n| Goal-Directedness | 10% | 0 | 0.00 |\n| Perception | 10% | 7 | 0.70 |\n| Action | 15% | 1 | 0.15 |\n| Reasoning | 20% | 6 | 1.20 |\n| Learning | 20% | 0 | 0.00 |\n| Proactiveness | 10% | 0 | 0.00 |\n| **Total** | **100%** | **-** | **2.80 / 10** |\n\n**Interpretation**: System exhibits **28% of full agentic capability**, classified as \"Reactive Assistant with Planning.\"\n\n### 3.2 Agent Maturity Level\n\n```\nLevel 1: Rule-Based System\nLevel 2: Reactive Assistant ← Current Position\nLevel 3: Semi-Autonomous Agent\nLevel 4: Fully Autonomous Agent\n```\n\n**Rationale**: System demonstrates planning and iteration (Level 2+ traits) but lacks learning, proactive behavior, and goal persistence (Level 3+ requirements).\n\n---\n\n## 4. Development Roadmap\n\n### 4.1 Phase 1: Memory & Learning (Weeks 1-4)\n\n**Objective**: Enable cross-session learning and error avoidance.\n\n#### 4.1.1 Episodic Memory Implementation\n```sql\nCREATE TABLE episodes (\n  id UUID PRIMARY KEY,\n  query TEXT,\n  intent VARCHAR(50),\n  tools_used JSONB,\n  outcome VARCHAR(20), -- 'success' | 'failure' | 'partial'\n  latency_ms INTEGER,\n  created_at TIMESTAMP\n);\n\nCREATE INDEX idx_episodes_intent ON episodes(intent);\nCREATE INDEX idx_episodes_outcome ON episodes(outcome);\n```\n\n**Integration Point**: Before Query Planner\n```typescript\nconst pastEpisodes = await db.query(\n  \"SELECT * FROM episodes WHERE intent = $1 AND outcome = 'success' ORDER BY created_at DESC LIMIT 5\",\n  [state.intent.type]\n);\n// LLM uses successful past strategies to inform current plan\n```\n\n**Expected Impact**:\n- 20-30% reduction in planning errors (learned strategies)\n- 15% latency improvement (skip failed approaches)\n\n#### 4.1.2 Error Pattern Detection\n```sql\nCREATE TABLE error_log (\n  id UUID PRIMARY KEY,\n  query TEXT,\n  failed_tool VARCHAR(100),\n  error_reason TEXT,\n  attempted_fix TEXT,\n  created_at TIMESTAMP\n);\n```\n\n**Integration Point**: Reflector Node\n```typescript\nconst priorFailures = await db.query(\n  \"SELECT * FROM error_log WHERE failed_tool = $1 AND query SIMILAR TO $2\",\n  [plannedTool, normalizeQuery(currentQuery)]\n);\n\nif (priorFailures.length > 0) {\n  // Avoid known failure pattern, select alternative tool\n}\n```\n\n**Expected Impact**:\n- 60% reduction in repeated errors\n- Faster convergence on complex queries\n\n**Timeline**: 4 weeks\n**Complexity**: Medium\n**Risk**: Low (additive feature, no breaking changes)\n\n---\n\n### 4.2 Phase 2: Real Environment Interaction (Weeks 5-8)\n\n**Objective**: Replace mock tools with actual repository analysis.\n\n#### 4.2.1 Git Integration Layer\n```typescript\nimport { exec } from \"child_process\";\nimport { promisify } from \"util\";\n\nconst execAsync = promisify(exec);\n\nasync function get_module_ownership(moduleName: string) {\n  // Real implementation\n  const { stdout } = await execAsync(\n    `git log --name-only --pretty=format:%an -- ${moduleName}/ | grep -v \"^$\"`\n  );\n  \n  const commits = parseGitLog(stdout);\n  const ownership = calculateOwnershipDistribution(commits);\n  return ownership; // Real data\n}\n```\n\n**Tools to Implement Real Analysis**:\n1. `get_module_ownership` - Git blame + commit history\n2. `get_all_modules` - Directory structure analysis\n3. `get_bus_factor` - Contributor concentration metrics\n4. `get_risk_modules` - Code churn + ownership correlation\n5. `get_developer_expertise` - Commit pattern analysis\n\n**Expected Impact**:\n- Actionable insights (vs. mock data)\n- Trust in production deployment\n- Foundation for real decision-making\n\n**Timeline**: 4 weeks\n**Complexity**: Medium\n**Risk**: Medium (requires Git access, error handling for malformed repos)\n\n---\n\n### 4.3 Phase 3: Task Decomposition (Weeks 9-12)\n\n**Objective**: Handle multi-step goals across conversation turns.\n\n#### 4.3.1 Goal Tracking Schema\n```typescript\ninterface Goal {\n  id: string;\n  description: string;\n  subgoals: SubGoal[];\n  status: \"in_progress\" | \"complete\" | \"failed\";\n  created_at: Date;\n}\n\ninterface SubGoal {\n  id: string;\n  description: string;\n  status: \"pending\" | \"in_progress\" | \"complete\";\n  dependencies: string[]; // Other subgoal IDs\n}\n```\n\n#### 4.3.2 Goal Decomposition Node\nInsert between Intent Parser and Query Planner:\n```\nIntent Parser → [Complex intent?]\n                 ├─ Yes → Goal Decomposer → Sub-task Queue\n                 └─ No  → Query Planner (existing flow)\n```\n\n**Example Decomposition**:\n```\nInput: \"Create ownership report for entire codebase\"\n\nDecomposed:\n  1. Get all modules (pending)\n  2. For each module:\n     a. Get ownership (pending, depends on 1)\n     b. Get bus factor (pending, depends on 2a)\n  3. Generate recommendations (pending, depends on 2)\n  4. Format report (pending, depends on 3)\n```\n\n**Expected Impact**:\n- Handle complex, multi-turn requests\n- Track progress transparently\n- Resume interrupted goals\n\n**Timeline**: 4 weeks\n**Complexity**: High\n**Risk**: Medium (state complexity, requires careful testing)\n\n---\n\n### 4.4 Phase 4: Proactive Behavior (Weeks 13-16)\n\n**Objective**: Autonomous monitoring and alerting.\n\n#### 4.4.1 Background Monitor Service\n```typescript\n// Separate service (not part of main agent)\ncron.schedule(\"0 */6 * * *\", async () => { // Every 6 hours\n  const metrics = await analyzeRepository();\n  \n  if (metrics.busFactor < 2) {\n    await sendAlert({\n      channel: \"#engineering\",\n      message: \"⚠️ Critical: Bus factor dropped to \" + metrics.busFactor,\n      severity: \"high\"\n    });\n  }\n  \n  if (metrics.orphanedModules.length > 0) {\n    await sendAlert({\n      channel: \"#engineering\",\n      message: `ℹ️ ${metrics.orphanedModules.length} modules have no assigned owner`,\n      severity: \"medium\"\n    });\n  }\n});\n```\n\n#### 4.4.2 Proactive Suggestions\nWithin response generation:\n```typescript\n// After answering primary query\nconst suggestions = generateRelatedQuestions(state.intent, state.toolResults);\n\nreturn {\n  answer: primaryAnswer,\n  suggestions: [\n    \"Would you also like to see backup owners?\",\n    \"Check bus factor for this module?\",\n    \"View ownership trends over time?\"\n  ]\n};\n```\n\n**Expected Impact**:\n- Prevent issues before they're discovered\n- Increase user engagement (suggested questions)\n\n**Timeline**: 4 weeks\n**Complexity**: Medium\n**Risk**: Low (optional feature, can be disabled)\n\n---\n\n### 4.5 Phase 5: Self-Improvement (Weeks 17-20)\n\n**Objective**: Automated prompt optimization and strategy tuning.\n\n#### 4.5.1 Prompt A/B Testing Framework\n```typescript\ninterface PromptVariant {\n  id: string;\n  file: string;\n  performance: {\n    successRate: number;\n    avgLatency: number;\n    sampleSize: number;\n  };\n}\n\n// Traffic split: 80% control, 20% experiment\nasync function selectPrompt(node: string): Promise<string> {\n  const variants = await getPromptVariants(node);\n  const roll = Math.random();\n  \n  if (roll < 0.8) {\n    return variants.control; // Current production prompt\n  } else {\n    return variants.experiment; // Testing variant\n  }\n}\n\n// After 100 samples per variant\nif (experiment.successRate > control.successRate + 0.05) {\n  promoteToProduction(experiment);\n}\n```\n\n#### 4.5.2 Strategy Meta-Learning\n```typescript\n// Track which planning strategies succeed\nconst strategies = {\n  \"parallel_tools\": { successRate: 0.92, avgLatency: 5200 },\n  \"sequential_tools\": { successRate: 0.78, avgLatency: 8100 },\n  \"single_tool_fast\": { successRate: 0.85, avgLatency: 3400 },\n};\n\n// Prefer high-success, low-latency strategies\nconst optimalStrategy = Object.entries(strategies)\n  .sort((a, b) => {\n    const scoreA = a[1].successRate / Math.log(a[1].avgLatency);\n    const scoreB = b[1].successRate / Math.log(b[1].avgLatency);\n    return scoreB - scoreA;\n  })[0];\n```\n\n**Expected Impact**:\n- 10-15% improvement in success rate over 6 months\n- Automatic adaptation to usage patterns\n\n**Timeline**: 4 weeks\n**Complexity**: High\n**Risk**: Medium (requires careful rollback mechanisms)\n\n---\n\n## 5. Production Readiness Analysis\n\n### 5.1 Current vs. Minimum Viable Product\n\n| Capability | Current Status | MVP Requirement | Gap |\n|------------|----------------|-----------------|-----|\n| Accurate Responses | ❌ Mock data | ✅ Real Git analysis | Phase 2 |\n| Error Handling | ⚠️ Retry once | ✅ Learned avoidance | Phase 1 |\n| Multi-Turn Tasks | ❌ Single query only | ✅ Goal decomposition | Phase 3 |\n| Performance Tracking | ❌ No metrics | ✅ Logging + monitoring | Phase 1 |\n| User Trust | ⚠️ Low (mock data) | ✅ High (real insights) | Phase 2 |\n\n**Verdict**: Phases 1 and 2 are **mandatory** for production deployment.\n\n### 5.2 Risk Assessment\n\n| Phase | Technical Risk | Business Value | Implementation Complexity |\n|-------|----------------|----------------|--------------------------|\n| 1: Memory & Learning | Low | High | Medium |\n| 2: Real Environment | Medium | Critical | Medium |\n| 3: Task Decomposition | Medium | Medium | High |\n| 4: Proactive Behavior | Low | Low | Medium |\n| 5: Self-Improvement | Medium | Low | High |\n\n**Recommended Sequence**: 1 → 2 → (evaluate) → 3 → 4 → 5\n\n---\n\n## 6. Comparative Analysis\n\n### 6.1 Positioning Relative to Alternative Approaches\n\n| Approach | Agentic Score | Transparency | Learning Capability | Deployment Complexity |\n|----------|---------------|--------------|---------------------|----------------------|\n| Simple Chatbot (GPT-4 + RAG) | 15% | High | None | Low |\n| **Current System** | **28%** | **High** | **None** | **Medium** |\n| After Phase 1-2 | 45% | High | Basic | Medium |\n| After Phase 1-3 | 60% | Medium | Moderate | High |\n| Fully Autonomous (Phase 1-5) | 75% | Medium | Advanced | Very High |\n| Google ADK Multi-Agent | 80% | Low | Advanced | Medium |\n\n### 6.2 Trade-off Analysis\n\n#### Current Design Strengths:\n- Full visibility into decision-making (7-node explicit graph)\n- Debuggable failures (pinpoint exact node failure)\n- Safe operation (no autonomous harmful actions)\n- Educational value (clear learning tool for LangGraph concepts)\n\n#### Current Design Weaknesses:\n- Limited practical utility (mock data)\n- No performance improvement over time (static prompts)\n- Cannot handle complex multi-day tasks\n\n#### Post-Phase 2 Trade-offs:\n- ✅ Gain: Actionable insights, production viability\n- ❌ Lose: Simplicity (more error cases to handle)\n- ⚠️ Risk: Git repository access issues, data accuracy concerns\n\n---\n\n## 7. Conclusions\n\n### 7.1 Current State Summary\n\nThe Knowledge Ownership Agent exhibits **partial agentic capability** (28% of full autonomy) through:\n- LLM-driven planning and tool selection\n- Iterative execution with reflection loops\n- Conversation context persistence\n\nThe system **lacks true agentic properties** in:\n- Cross-session learning\n- Goal-directed multi-turn task execution\n- Proactive autonomous behavior\n- Self-optimization\n\n### 7.2 Classification\n\n**Agent Type**: Reactive Assistant with Planning Capabilities\n\n**Use Case Suitability**:\n- ✅ Educational demonstration of LangGraph concepts\n- ✅ Prototype for gathering requirements\n- ❌ Production codebase analysis (requires Phase 2)\n- ❌ Autonomous monitoring (requires Phase 4)\n\n### 7.3 Recommended Path Forward\n\n**Immediate (Weeks 1-8)**: Implement Phases 1-2\n- **Why**: Unlocks production viability and user trust\n- **ROI**: Transforms prototype → deployable product\n- **Risk**: Low-medium, well-understood implementation\n\n**Medium-Term (Weeks 9-16)**: Evaluate need for Phases 3-4\n- **Decision Criteria**: User demand for complex multi-step tasks, monitoring requirements\n- **Alternative**: May not be necessary if simple query-response sufficient\n\n**Long-Term (Weeks 17+)**: Consider Phase 5 only if data supports value\n- **Condition**: Sufficient query volume (>1000/day) to power A/B testing\n- **Alternative**: Manual prompt optimization may suffice for lower volumes\n\n---\n\n## 8. References\n\n- [Agentic AI Systems: Survey](https://arxiv.org/abs/2308.10848)\n- [Building Effective AI Agents](https://www.anthropic.com/index/building-effective-agents)\n- [LangGraph Production Patterns](https://langchain-ai.github.io/langgraph/)\n- [Autonomous Agent Benchmarks](https://github.com/benchmarks/agentbench)\n\n---\n\n**Document Version**: 1.0  \n**Assessment Date**: January 28, 2026  \n**Next Review**: Post-Phase 2 Implementation\n",
+      "filename" : "is-it-agentic.md",
+      "format" : "Markdown",
+      "order" : 2,
+      "title" : ""
+    } ]
+  },
+  "id" : 1,
+  "lastModifiedAgent" : "structurizr-ui",
+  "lastModifiedDate" : "2026-01-28T15:38:05Z",
+  "model" : {
+    "people" : [ {
+      "description" : "Asks questions about code ownership, bus factors, and risk.",
+      "id" : "1",
+      "name" : "Software Engineer",
+      "properties" : {
+        "structurizr.dsl.identifier" : "engineer"
+      },
+      "relationships" : [ {
+        "description" : "Asks ownership questions via chat",
+        "destinationId" : "4",
+        "id" : "23",
+        "sourceId" : "1",
+        "tags" : "Relationship"
+      }, {
+        "description" : "Asks ownership questions via chat",
+        "destinationId" : "3",
+        "id" : "24",
+        "linkedRelationshipId" : "23",
+        "sourceId" : "1"
+      } ],
+      "tags" : "Element,Person"
+    }, {
+      "description" : "Reviews ownership distribution and planning.",
+      "id" : "2",
+      "name" : "Tech Lead",
+      "properties" : {
+        "structurizr.dsl.identifier" : "techlead"
+      },
+      "relationships" : [ {
+        "description" : "Reviews insights and metrics",
+        "destinationId" : "4",
+        "id" : "25",
+        "sourceId" : "2",
+        "tags" : "Relationship"
+      }, {
+        "description" : "Reviews insights and metrics",
+        "destinationId" : "3",
+        "id" : "26",
+        "linkedRelationshipId" : "25",
+        "sourceId" : "2"
+      } ],
+      "tags" : "Element,Person"
+    } ],
+    "softwareSystems" : [ {
+      "containers" : [ {
+        "description" : "Chat interface with thought process visualization.",
+        "documentation" : { },
+        "id" : "4",
+        "name" : "Web UI",
+        "properties" : {
+          "structurizr.dsl.identifier" : "webUI"
+        },
+        "relationships" : [ {
+          "description" : "Sends chat messages",
+          "destinationId" : "5",
+          "id" : "27",
+          "sourceId" : "4",
+          "tags" : "Relationship",
+          "technology" : "WebSocket/HTTPS"
+        } ],
+        "tags" : "Element,Container",
+        "technology" : "Next.js, React, TailwindCSS"
+      }, {
+        "description" : "Handles chat requests and streaming.",
+        "documentation" : { },
+        "id" : "5",
+        "name" : "API Server",
+        "properties" : {
+          "structurizr.dsl.identifier" : "apiServer"
+        },
+        "relationships" : [ {
+          "description" : "Invokes graph execution",
+          "destinationId" : "6",
+          "id" : "28",
+          "sourceId" : "5",
+          "tags" : "Relationship"
+        } ],
+        "tags" : "Element,Container",
+        "technology" : "Node.js, Express"
+      }, {
+        "components" : [ {
+          "description" : "Compiles and executes the 7-node workflow.",
+          "documentation" : { },
+          "id" : "7",
+          "name" : "Graph Compiler",
+          "properties" : {
+            "structurizr.dsl.identifier" : "graphCompiler"
+          },
+          "relationships" : [ {
+            "description" : "Starts execution",
+            "destinationId" : "10",
+            "id" : "36",
+            "sourceId" : "7",
+            "tags" : "Relationship"
+          } ],
+          "tags" : "Element,Component",
+          "technology" : "LangGraph"
+        }, {
+          "description" : "Manages agent state with custom reducers.",
+          "documentation" : { },
+          "id" : "8",
+          "name" : "State Manager",
+          "properties" : {
+            "structurizr.dsl.identifier" : "stateManager"
+          },
+          "relationships" : [ {
+            "description" : "Persists state",
+            "destinationId" : "9",
+            "id" : "58",
+            "sourceId" : "8",
+            "tags" : "Relationship"
+          } ],
+          "tags" : "Element,Component",
+          "technology" : "Annotation API"
+        }, {
+          "description" : "Persists conversation state to MySQL.",
+          "documentation" : { },
+          "id" : "9",
+          "name" : "Checkpoint Saver",
+          "properties" : {
+            "structurizr.dsl.identifier" : "checkpointSaver"
+          },
+          "relationships" : [ {
+            "description" : "Writes checkpoints",
+            "destinationId" : "21",
+            "id" : "59",
+            "sourceId" : "9",
+            "tags" : "Relationship"
+          } ],
+          "tags" : "Element,Component",
+          "technology" : "MySQLSaver"
+        }, {
+          "description" : "Initializes session with system context.",
+          "documentation" : { },
+          "id" : "10",
+          "name" : "Orchestrator Node",
+          "properties" : {
+            "structurizr.dsl.identifier" : "orchestratorNode"
+          },
+          "relationships" : [ {
+            "description" : "Passes control",
+            "destinationId" : "11",
+            "id" : "37",
+            "sourceId" : "10",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Updates state",
+            "destinationId" : "8",
+            "id" : "45",
+            "sourceId" : "10",
+            "tags" : "Relationship"
+          } ],
+          "tags" : "Element,Component",
+          "technology" : "Node 1"
+        }, {
+          "description" : "Blocks off-topic or unsafe queries.",
+          "documentation" : { },
+          "id" : "11",
+          "name" : "Guardrail Node",
+          "properties" : {
+            "structurizr.dsl.identifier" : "guardrailNode"
+          },
+          "relationships" : [ {
+            "description" : "If allowed",
+            "destinationId" : "12",
+            "id" : "38",
+            "sourceId" : "11",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Updates state",
+            "destinationId" : "8",
+            "id" : "46",
+            "sourceId" : "11",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Loads guardrail prompt",
+            "destinationId" : "17",
+            "id" : "52",
+            "sourceId" : "11",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Binary decision (GPT-3.5)",
+            "destinationId" : "20",
+            "id" : "60",
+            "sourceId" : "11",
+            "tags" : "Relationship"
+          } ],
+          "tags" : "Element,Component",
+          "technology" : "Node 2"
+        }, {
+          "description" : "Classifies user intent and extracts entities.",
+          "documentation" : { },
+          "id" : "12",
+          "name" : "Intent Parser Node",
+          "properties" : {
+            "structurizr.dsl.identifier" : "intentParserNode"
+          },
+          "relationships" : [ {
+            "description" : "Passes classified intent",
+            "destinationId" : "13",
+            "id" : "39",
+            "sourceId" : "12",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Updates state",
+            "destinationId" : "8",
+            "id" : "47",
+            "sourceId" : "12",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Loads intent parser prompt",
+            "destinationId" : "17",
+            "id" : "53",
+            "sourceId" : "12",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Intent classification (GPT-4)",
+            "destinationId" : "20",
+            "id" : "61",
+            "sourceId" : "12",
+            "tags" : "Relationship"
+          } ],
+          "tags" : "Element,Component",
+          "technology" : "Node 3"
+        }, {
+          "description" : "Plans which tools to execute.",
+          "documentation" : { },
+          "id" : "13",
+          "name" : "Query Planner Node",
+          "properties" : {
+            "structurizr.dsl.identifier" : "queryPlannerNode"
+          },
+          "relationships" : [ {
+            "description" : "If tools needed",
+            "destinationId" : "14",
+            "id" : "40",
+            "sourceId" : "13",
+            "tags" : "Relationship"
+          }, {
+            "description" : "If no tools needed",
+            "destinationId" : "16",
+            "id" : "41",
+            "sourceId" : "13",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Updates state",
+            "destinationId" : "8",
+            "id" : "48",
+            "sourceId" : "13",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Loads planner prompt",
+            "destinationId" : "17",
+            "id" : "54",
+            "sourceId" : "13",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Tool selection (GPT-4)",
+            "destinationId" : "20",
+            "id" : "62",
+            "sourceId" : "13",
+            "tags" : "Relationship"
+          } ],
+          "tags" : "Element,Component",
+          "technology" : "Node 4"
+        }, {
+          "description" : "Executes planned tools.",
+          "documentation" : { },
+          "id" : "14",
+          "name" : "Tool Executor Node",
+          "properties" : {
+            "structurizr.dsl.identifier" : "toolExecutorNode"
+          },
+          "relationships" : [ {
+            "description" : "Passes tool results",
+            "destinationId" : "15",
+            "id" : "42",
+            "sourceId" : "14",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Updates state",
+            "destinationId" : "8",
+            "id" : "49",
+            "sourceId" : "14",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Executes tools",
+            "destinationId" : "18",
+            "id" : "57",
+            "sourceId" : "14",
+            "tags" : "Relationship"
+          } ],
+          "tags" : "Element,Component",
+          "technology" : "Node 5"
+        }, {
+          "description" : "Validates if sufficient data collected.",
+          "documentation" : { },
+          "id" : "15",
+          "name" : "Reflector Node",
+          "properties" : {
+            "structurizr.dsl.identifier" : "reflectorNode"
+          },
+          "relationships" : [ {
+            "description" : "If needs more data (loop)",
+            "destinationId" : "13",
+            "id" : "43",
+            "sourceId" : "15",
+            "tags" : "Relationship"
+          }, {
+            "description" : "If complete",
+            "destinationId" : "16",
+            "id" : "44",
+            "sourceId" : "15",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Updates state",
+            "destinationId" : "8",
+            "id" : "50",
+            "sourceId" : "15",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Loads reflector prompt",
+            "destinationId" : "17",
+            "id" : "55",
+            "sourceId" : "15",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Validation logic (GPT-3.5)",
+            "destinationId" : "20",
+            "id" : "63",
+            "sourceId" : "15",
+            "tags" : "Relationship"
+          } ],
+          "tags" : "Element,Component",
+          "technology" : "Node 6"
+        }, {
+          "description" : "Creates final user response.",
+          "documentation" : { },
+          "id" : "16",
+          "name" : "Response Generator Node",
+          "properties" : {
+            "structurizr.dsl.identifier" : "responseGeneratorNode"
+          },
+          "relationships" : [ {
+            "description" : "Updates state",
+            "destinationId" : "8",
+            "id" : "51",
+            "sourceId" : "16",
+            "tags" : "Relationship"
+          }, {
+            "description" : "Loads generator prompt",
+            "destinationId" : "17",
+            "id" : "56",
+            "sourceId" : "16",
+            "tags" : "Relationship"
+          }, {
+            "description" : "NL synthesis (GPT-4)",
+            "destinationId" : "20",
+            "id" : "64",
+            "sourceId" : "16",
+            "tags" : "Relationship"
+          } ],
+          "tags" : "Element,Component",
+          "technology" : "Node 7"
+        }, {
+          "description" : "Loads YAML prompts with COSTAR framework.",
+          "documentation" : { },
+          "id" : "17",
+          "name" : "Prompt Loader",
+          "properties" : {
+            "structurizr.dsl.identifier" : "promptLoader"
+          },
+          "tags" : "Element,Component",
+          "technology" : "Utility"
+        }, {
+          "description" : "Provides 5 code analysis tools.",
+          "documentation" : { },
+          "id" : "18",
+          "name" : "Tool Registry",
+          "properties" : {
+            "structurizr.dsl.identifier" : "toolRegistry"
+          },
+          "tags" : "Element,Component",
+          "technology" : "Mock Tools"
+        } ],
+        "description" : "7-node stateful agent graph for conversational AI.",
+        "documentation" : { },
+        "id" : "6",
+        "name" : "LangGraph Agent",
+        "properties" : {
+          "structurizr.dsl.identifier" : "langGraphAgent"
+        },
+        "relationships" : [ {
+          "description" : "Loads prompts",
+          "destinationId" : "19",
+          "id" : "29",
+          "sourceId" : "6",
+          "tags" : "Relationship",
+          "technology" : "File System"
+        }, {
+          "description" : "Calls LLM for reasoning",
+          "destinationId" : "20",
+          "id" : "30",
+          "sourceId" : "6",
+          "tags" : "Relationship",
+          "technology" : "REST API"
+        }, {
+          "description" : "Saves/loads checkpoints",
+          "destinationId" : "21",
+          "id" : "32",
+          "sourceId" : "6",
+          "tags" : "Relationship",
+          "technology" : "MySQL protocol"
+        }, {
+          "description" : "Analyzes ownership",
+          "destinationId" : "22",
+          "id" : "34",
+          "sourceId" : "6",
+          "tags" : "Relationship",
+          "technology" : "Git commands"
+        } ],
+        "tags" : "Element,Container",
+        "technology" : "TypeScript, LangGraph"
+      }, {
+        "description" : "COSTAR-formatted prompts for each node.",
+        "documentation" : { },
+        "id" : "19",
+        "name" : "Prompt Library",
+        "properties" : {
+          "structurizr.dsl.identifier" : "promptLibrary"
+        },
+        "tags" : "Element,Container",
+        "technology" : "YAML files"
+      } ],
+      "description" : "AI-powered agent that analyzes codebase ownership and provides insights.",
+      "documentation" : { },
+      "group" : "Knowledge Ownership System",
+      "id" : "3",
+      "name" : "Knowledge Ownership Agent",
+      "properties" : {
+        "structurizr.dsl.identifier" : "agentSystem"
+      },
+      "relationships" : [ {
+        "description" : "Calls LLM for reasoning",
+        "destinationId" : "20",
+        "id" : "31",
+        "linkedRelationshipId" : "30",
+        "sourceId" : "3",
+        "technology" : "REST API"
+      }, {
+        "description" : "Saves/loads checkpoints",
+        "destinationId" : "21",
+        "id" : "33",
+        "linkedRelationshipId" : "32",
+        "sourceId" : "3",
+        "technology" : "MySQL protocol"
+      }, {
+        "description" : "Analyzes ownership",
+        "destinationId" : "22",
+        "id" : "35",
+        "linkedRelationshipId" : "34",
+        "sourceId" : "3",
+        "technology" : "Git commands"
+      } ],
+      "tags" : "Element,Software System"
+    }, {
+      "description" : "Natural language understanding and generation.",
+      "documentation" : { },
+      "group" : "Knowledge Ownership System",
+      "id" : "20",
+      "name" : "LLM Service",
+      "properties" : {
+        "structurizr.dsl.identifier" : "llmService"
+      },
+      "tags" : "Element,Software System,OpenAI GPT-4"
+    }, {
+      "description" : "Stores conversation checkpoints.",
+      "documentation" : { },
+      "group" : "Knowledge Ownership System",
+      "id" : "21",
+      "name" : "MySQL Database",
+      "properties" : {
+        "structurizr.dsl.identifier" : "database"
+      },
+      "tags" : "Element,Software System,MySQL 8.0"
+    }, {
+      "description" : "Source of ownership data.",
+      "documentation" : { },
+      "group" : "Knowledge Ownership System",
+      "id" : "22",
+      "name" : "Code Repository",
+      "properties" : {
+        "structurizr.dsl.identifier" : "codeRepository"
+      },
+      "tags" : "Element,Software System,Git"
+    } ]
+  },
+  "name" : "Knowledge Ownership Agent",
+  "properties" : {
+    "structurizr.inspection.info" : "0",
+    "structurizr.inspection.ignore" : "0",
+    "structurizr.inspection.error" : "36",
+    "structurizr.inspection.warning" : "0"
+  },
+  "views" : {
+    "componentViews" : [ {
+      "automaticLayout" : {
+        "applied" : true,
+        "edgeSeparation" : 0,
+        "implementation" : "Graphviz",
+        "nodeSeparation" : 300,
+        "rankDirection" : "TopBottom",
+        "rankSeparation" : 300,
+        "vertices" : false
+      },
+      "containerId" : "6",
+      "description" : "Component diagram for the 7-node Agent Graph",
+      "dimensions" : {
+        "height" : 6740,
+        "width" : 6727
+      },
+      "elements" : [ {
+        "id" : "7",
+        "x" : 777,
+        "y" : 183
+      }, {
+        "id" : "8",
+        "x" : 977,
+        "y" : 4983
+      }, {
+        "id" : "9",
+        "x" : 977,
+        "y" : 5583
+      }, {
+        "id" : "10",
+        "x" : 777,
+        "y" : 783
+      }, {
+        "id" : "11",
+        "x" : 2077,
+        "y" : 1383
+      }, {
+        "id" : "12",
+        "x" : 2077,
+        "y" : 1983
+      }, {
+        "id" : "13",
+        "x" : 2873,
+        "y" : 2583
+      }, {
+        "id" : "14",
+        "x" : 2235,
+        "y" : 3183
+      }, {
+        "id" : "15",
+        "x" : 2873,
+        "y" : 3783
+      }, {
+        "id" : "16",
+        "x" : 3181,
+        "y" : 4383
+      }, {
+        "id" : "17",
+        "x" : 3181,
+        "y" : 4983
+      }, {
+        "id" : "18",
+        "x" : 2123,
+        "y" : 3783
+      }, {
+        "id" : "20",
+        "x" : 5085,
+        "y" : 4983
+      }, {
+        "id" : "21",
+        "x" : 977,
+        "y" : 6183
+      } ],
+      "externalContainerBoundariesVisible" : false,
+      "key" : "LangGraphComponents",
+      "name" : "Component View: Knowledge Ownership Agent - LangGraph Agent",
+      "order" : 4,
+      "relationships" : [ {
+        "id" : "36"
+      }, {
+        "id" : "37"
+      }, {
+        "id" : "38"
+      }, {
+        "id" : "39"
+      }, {
+        "id" : "40"
+      }, {
+        "id" : "41",
+        "vertices" : [ {
+          "x" : 3473,
+          "y" : 3783
+        }, {
+          "x" : 3473,
+          "y" : 4083
+        } ]
+      }, {
+        "id" : "42"
+      }, {
+        "id" : "43"
+      }, {
+        "id" : "44"
+      }, {
+        "id" : "45",
+        "vertices" : [ {
+          "x" : 277,
+          "y" : 2129
+        }, {
+          "x" : 277,
+          "y" : 3937
+        }, {
+          "x" : 731,
+          "y" : 4683
+        } ]
+      }, {
+        "id" : "46",
+        "vertices" : [ {
+          "x" : 585,
+          "y" : 2729
+        }, {
+          "x" : 585,
+          "y" : 3937
+        }, {
+          "x" : 940,
+          "y" : 4683
+        } ]
+      }, {
+        "id" : "47",
+        "vertices" : [ {
+          "x" : 1431,
+          "y" : 2583
+        }, {
+          "x" : 894,
+          "y" : 3329
+        }, {
+          "x" : 894,
+          "y" : 3937
+        } ]
+      }, {
+        "id" : "48",
+        "vertices" : [ {
+          "x" : 2085,
+          "y" : 3183
+        }, {
+          "x" : 1385,
+          "y" : 4383
+        } ]
+      }, {
+        "id" : "49",
+        "vertices" : [ {
+          "x" : 1973,
+          "y" : 3783
+        } ]
+      }, {
+        "id" : "50"
+      }, {
+        "id" : "51"
+      }, {
+        "id" : "52",
+        "vertices" : [ {
+          "x" : 4244,
+          "y" : 2729
+        }, {
+          "x" : 4244,
+          "y" : 3937
+        }, {
+          "x" : 3860,
+          "y" : 4683
+        } ]
+      }, {
+        "id" : "53",
+        "vertices" : [ {
+          "x" : 1510,
+          "y" : 3329
+        }, {
+          "x" : 1510,
+          "y" : 3937
+        } ]
+      }, {
+        "id" : "54",
+        "vertices" : [ {
+          "x" : 3394,
+          "y" : 3183
+        }, {
+          "x" : 3781,
+          "y" : 4383
+        }, {
+          "x" : 3781,
+          "y" : 4683
+        } ]
+      }, {
+        "id" : "55",
+        "vertices" : [ {
+          "x" : 3031,
+          "y" : 4383
+        }, {
+          "x" : 3031,
+          "y" : 4683
+        } ]
+      }, {
+        "id" : "56"
+      }, {
+        "id" : "57"
+      }, {
+        "id" : "58"
+      }, {
+        "id" : "59"
+      }, {
+        "id" : "60",
+        "vertices" : [ {
+          "x" : 6527,
+          "y" : 2729
+        }, {
+          "x" : 6527,
+          "y" : 3937
+        }, {
+          "x" : 5844,
+          "y" : 4683
+        } ]
+      }, {
+        "id" : "61",
+        "vertices" : [ {
+          "x" : 5919,
+          "y" : 3329
+        }, {
+          "x" : 5919,
+          "y" : 3937
+        } ]
+      }, {
+        "id" : "62",
+        "vertices" : [ {
+          "x" : 3523,
+          "y" : 3183
+        } ]
+      }, {
+        "id" : "63"
+      }, {
+        "id" : "64"
+      } ]
+    } ],
+    "configuration" : {
+      "branding" : { },
+      "lastSavedView" : "LangGraphComponents",
+      "metadataSymbols" : "SquareBrackets",
+      "styles" : {
+        "elements" : [ {
+          "background" : "#85bbf0",
+          "color" : "#000000",
+          "tag" : "Component"
+        }, {
+          "background" : "#438dd5",
+          "color" : "#ffffff",
+          "tag" : "Container"
+        }, {
+          "background" : "#90ee90",
+          "color" : "#000000",
+          "tag" : "Node 1"
+        }, {
+          "background" : "#ffe4b5",
+          "color" : "#000000",
+          "tag" : "Node 2"
+        }, {
+          "background" : "#b0e0e6",
+          "color" : "#000000",
+          "tag" : "Node 3"
+        }, {
+          "background" : "#dda0dd",
+          "color" : "#000000",
+          "tag" : "Node 4"
+        }, {
+          "background" : "#f0e68c",
+          "color" : "#000000",
+          "tag" : "Node 5"
+        }, {
+          "background" : "#ffa07a",
+          "color" : "#000000",
+          "tag" : "Node 6"
+        }, {
+          "background" : "#98fb98",
+          "color" : "#000000",
+          "tag" : "Node 7"
+        }, {
+          "background" : "#08427b",
+          "color" : "#ffffff",
+          "shape" : "Person",
+          "tag" : "Person"
+        }, {
+          "background" : "#1168bd",
+          "color" : "#ffffff",
+          "tag" : "Software System"
+        } ]
+      },
+      "terminology" : { }
+    },
+    "containerViews" : [ {
+      "automaticLayout" : {
+        "applied" : true,
+        "edgeSeparation" : 0,
+        "implementation" : "Graphviz",
+        "nodeSeparation" : 300,
+        "rankDirection" : "TopBottom",
+        "rankSeparation" : 300,
+        "vertices" : false
+      },
+      "description" : "Container diagram showing major technology components",
+      "dimensions" : {
+        "height" : 3299,
+        "width" : 3425
+      },
+      "elements" : [ {
+        "id" : "1",
+        "x" : 199,
+        "y" : 143
+      }, {
+        "id" : "2",
+        "x" : 899,
+        "y" : 143
+      }, {
+        "id" : "4",
+        "x" : 524,
+        "y" : 843
+      }, {
+        "id" : "5",
+        "x" : 524,
+        "y" : 1443
+      }, {
+        "id" : "6",
+        "x" : 524,
+        "y" : 2043
+      }, {
+        "id" : "19",
+        "x" : 524,
+        "y" : 2643
+      }, {
+        "id" : "20",
+        "x" : 1274,
+        "y" : 2643
+      }, {
+        "id" : "21",
+        "x" : 2024,
+        "y" : 2643
+      }, {
+        "id" : "22",
+        "x" : 2774,
+        "y" : 2643
+      } ],
+      "externalSoftwareSystemBoundariesVisible" : false,
+      "key" : "Containers",
+      "name" : "Container View: Knowledge Ownership Agent",
+      "order" : 3,
+      "relationships" : [ {
+        "id" : "23"
+      }, {
+        "id" : "25"
+      }, {
+        "id" : "27"
+      }, {
+        "id" : "28"
+      }, {
+        "id" : "29"
+      }, {
+        "id" : "30"
+      }, {
+        "id" : "32"
+      }, {
+        "id" : "34",
+        "vertices" : [ {
+          "x" : 2624,
+          "y" : 2643
+        } ]
+      } ],
+      "softwareSystemId" : "3"
+    } ],
+    "systemContextViews" : [ {
+      "automaticLayout" : {
+        "applied" : false,
+        "edgeSeparation" : 0,
+        "implementation" : "Graphviz",
+        "nodeSeparation" : 300,
+        "rankDirection" : "TopBottom",
+        "rankSeparation" : 300,
+        "vertices" : false
+      },
+      "description" : "System Context diagram for Knowledge Ownership Agent",
+      "elements" : [ {
+        "id" : "1",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "2",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "3",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "20",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "21",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "22",
+        "x" : 0,
+        "y" : 0
+      } ],
+      "enterpriseBoundaryVisible" : true,
+      "key" : "SystemContext",
+      "name" : "System Context View: Knowledge Ownership Agent",
+      "order" : 2,
+      "relationships" : [ {
+        "id" : "24"
+      }, {
+        "id" : "26"
+      }, {
+        "id" : "31"
+      }, {
+        "id" : "33"
+      }, {
+        "id" : "35"
+      } ],
+      "softwareSystemId" : "3"
+    } ],
+    "systemLandscapeViews" : [ {
+      "automaticLayout" : {
+        "applied" : true,
+        "edgeSeparation" : 0,
+        "implementation" : "Graphviz",
+        "nodeSeparation" : 300,
+        "rankDirection" : "TopBottom",
+        "rankSeparation" : 300,
+        "vertices" : false
+      },
+      "dimensions" : {
+        "height" : 2083,
+        "width" : 2390
+      },
+      "elements" : [ {
+        "id" : "1",
+        "x" : 645,
+        "y" : 159
+      }, {
+        "id" : "2",
+        "x" : 1345,
+        "y" : 159
+      }, {
+        "id" : "3",
+        "x" : 970,
+        "y" : 859
+      }, {
+        "id" : "20",
+        "x" : 220,
+        "y" : 1459
+      }, {
+        "id" : "21",
+        "x" : 970,
+        "y" : 1459
+      }, {
+        "id" : "22",
+        "x" : 1720,
+        "y" : 1459
+      } ],
+      "enterpriseBoundaryVisible" : true,
+      "key" : "SystemLandscape",
+      "name" : "System Landscape View",
+      "order" : 1,
+      "relationships" : [ {
+        "id" : "24"
+      }, {
+        "id" : "26"
+      }, {
+        "id" : "31"
+      }, {
+        "id" : "33"
+      }, {
+        "id" : "35"
+      } ]
+    } ]
+  }
+}

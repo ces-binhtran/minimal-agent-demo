@@ -1,0 +1,4 @@
+# Default Owners
+*       @global-owner
+src/    @frontend-team
+src/lib @backend-team

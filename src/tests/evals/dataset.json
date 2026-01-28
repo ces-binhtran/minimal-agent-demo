@@ -1,0 +1,33 @@
+[
+    {
+        "id": "1",
+        "query": "Who owns the payment module?",
+        "expected_intent": "module_ownership",
+        "expected_entities": {
+            "module": "payment"
+        }
+    },
+    {
+        "id": "2",
+        "query": "What is the bus factor?",
+        "expected_intent": "bus_factor"
+    },
+    {
+        "id": "3",
+        "query": "What is the weather in Tokyo?",
+        "expected_intent": "refusal"
+    },
+    {
+        "id": "4",
+        "query": "Which code is at high risk?",
+        "expected_intent": "risk_analysis"
+    },
+    {
+        "id": "5",
+        "query": "Who owns src/auth/login.ts?",
+        "expected_intent": "module_ownership",
+        "expected_entities": {
+            "file": "src/auth/login.ts"
+        }
+    }
+]
