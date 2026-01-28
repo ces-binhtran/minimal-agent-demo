@@ -23,13 +23,16 @@ jobs:
       
       - name: Download Structurizr CLI
         run: |
+          mkdir -p structurizr-cli
+          cd structurizr-cli
           wget -q https://github.com/structurizr/cli/releases/latest/download/structurizr-cli.zip
           unzip -q structurizr-cli.zip
           chmod +x structurizr.sh
+          cd ..
       
       - name: Export static site
         run: |
-          ./structurizr.sh export \
+          ./structurizr-cli/structurizr.sh export \
             -workspace docs/workspace.dsl \
             -format plantuml/structurizr \
             -output site/
