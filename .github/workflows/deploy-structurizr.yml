@@ -21,6 +21,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       
+      - name: Install Graphviz
+        run: sudo apt-get update && sudo apt-get install -y graphviz
+      
       - name: Download Structurizr CLI
         run: |
           mkdir -p structurizr-cli
@@ -34,7 +37,7 @@ jobs:
         run: |
           ./structurizr-cli/structurizr.sh export \
             -workspace docs/workspace.dsl \
-            -format plantuml/structurizr \
+            -format static \
             -output site/
       
       - name: Setup Pages
